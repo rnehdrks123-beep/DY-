@@ -1,0 +1,6 @@
+{
+  "name": "네이버 블로그 리뷰 생성기",
+  "description": "맛집과 핫플 방문을 자연스럽고 생생하게 리뷰하는 20~30대 네이버 블로거 감성의 맞춤형 포스팅 생성기",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
