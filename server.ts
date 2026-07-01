@@ -90,16 +90,50 @@ app.post("/api/generate-review", async (req, res) => {
 추가 참고 사항: ${extra_info || "없음"}
 말투 테마 선호도: ${tone_option || "맛집 인플루언서의 자연스럽고 통통 튀는 블로거 말투"}`;
 
-    const response = await client.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: userPrompt,
-      config: {
-        systemInstruction,
-        temperature: 0.85,
-      },
-    });
+    // Robust multi-model fallback and retry mechanism to handle 503 (high demand) gracefully
+    const modelsToTry = ["gemini-2.5-flash", "gemini-3.5-flash"];
+    let generatedText = "";
+    let lastError: any = null;
 
-    const generatedText = response.text || "";
+    for (const model of modelsToTry) {
+      let attempts = 3;
+      while (attempts > 0 && !generatedText) {
+        try {
+          console.log(`Attempting review generation with model: ${model} (${4 - attempts}/3)`);
+          const response = await client.models.generateContent({
+            model: model,
+            contents: userPrompt,
+            config: {
+              systemInstruction,
+              temperature: 0.85,
+            },
+          });
+          if (response.text) {
+            generatedText = response.text;
+            console.log(`Successfully generated review using model: ${model}`);
+            break;
+          }
+        } catch (err: any) {
+          lastError = err;
+          console.warn(`Attempt failed for model ${model}. Error: ${err.message || err}`);
+          attempts--;
+          if (attempts > 0) {
+            // Wait 1.5 seconds before retrying
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          }
+        }
+      }
+      if (generatedText) break;
+    }
+
+    if (!generatedText) {
+      const isUnavailable = lastError?.message?.includes("503") || lastError?.message?.includes("UNAVAILABLE") || JSON.stringify(lastError)?.includes("503");
+      const userFriendlyMessage = isUnavailable
+        ? "현재 Google Gemini 서버가 일시적으로 매우 혼잡합니다. 잠시 후 [AI 네이버 블로그 리뷰 생성] 버튼을 다시 한번 클릭해 주세요!"
+        : (lastError?.message || "리뷰를 생성하는 중 일시적인 문제가 발생했습니다.");
+      res.status(503).json({ error: userFriendlyMessage });
+      return;
+    }
 
     res.json({ text: generatedText });
   } catch (error: any) {
