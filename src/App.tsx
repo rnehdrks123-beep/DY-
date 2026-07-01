@@ -51,12 +51,27 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || "블로그 포스팅 생성 중 문제가 발생했습니다.");
+        const errText = await response.text().catch(() => "");
+        let serverError = "블로그 포스팅 생성 중 문제가 발생했습니다.";
+        try {
+          const errData = JSON.parse(errText);
+          serverError = errData.error || serverError;
+        } catch {
+          if (errText.includes("<html") || errText.includes("<!DOCTYPE")) {
+            serverError = `서버 일시 과부하 또는 네트워크 에러 (${response.status}). 잠시 후 다시 시도해 주세요.`;
+          } else {
+            serverError = errText.substring(0, 150) || serverError;
+          }
+        }
+        throw new Error(serverError);
       }
 
       const data = await response.json();
       
+      if (data.success === false) {
+        throw new Error(data.error || "블로그 포스팅 생성 중 문제가 발생했습니다.");
+      }
+
       // Parse Title out from the output
       const rawText = data.text || "";
       const lines = rawText.split("\n").map((l: string) => l.trim()).filter(Boolean);

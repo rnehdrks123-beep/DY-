@@ -15,9 +15,10 @@ app.use(express.json());
 let ai: GoogleGenAI | null = null;
 function getGeminiClient(): GoogleGenAI {
   if (!ai) {
-    const apiKey = process.env.GEMINI_API_KEY;
+    // Try standard, client, and generic variable names to make sure we don't miss the key
+    const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || process.env.API_KEY;
     if (!apiKey) {
-      throw new Error("GEMINI_API_KEY environment variable is missing. Please add it via Settings > Secrets.");
+      throw new Error("GEMINI_API_KEY environment variable is missing. Please add it via Settings > Secrets in AI Studio.");
     }
     ai = new GoogleGenAI({
       apiKey,
@@ -37,11 +38,18 @@ app.post("/api/generate-review", async (req, res) => {
     const { store_region, store_name, place_link, main_keywords, detail_keywords, extra_info, tone_option } = req.body;
 
     if (!store_name || !store_region || !main_keywords) {
-      res.status(400).json({ error: "매장명, 매장 지역, 메인 키워드는 필수 입력 항목입니다." });
+      res.json({ success: false, error: "매장명, 매장 지역, 메인 키워드는 필수 입력 항목입니다." });
       return;
     }
 
-    const client = getGeminiClient();
+    let client: GoogleGenAI;
+    try {
+      client = getGeminiClient();
+    } catch (apiErr: any) {
+      console.error("Gemini init error:", apiErr);
+      res.json({ success: false, error: apiErr.message || "Gemini API 키가 올바르게 구성되지 않았습니다." });
+      return;
+    }
 
     const systemInstruction = `너는 네이버 블로그 맛집 인플루언서다.
 맛집과 핫플을 자주 방문하며 자연스럽고 사람처럼 생생하고 흥미진진한 리뷰를 작성한다.
@@ -90,16 +98,19 @@ app.post("/api/generate-review", async (req, res) => {
 추가 참고 사항: ${extra_info || "없음"}
 말투 테마 선호도: ${tone_option || "맛집 인플루언서의 자연스럽고 통통 튀는 블로거 말투"}`;
 
-    // Robust multi-model fallback and retry mechanism to handle 503 (high demand) gracefully
-    const modelsToTry = ["gemini-2.5-flash", "gemini-3.5-flash"];
+    // Highly robust fallback model chain
+    // 'gemini-3.5-flash' -> latest text generation optimized model
+    // 'gemini-3.1-flash-lite' -> high-availability lightweight fallback
+    // 'gemini-flash-latest' -> standard stable fallback
+    const modelsToTry = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
     let generatedText = "";
     let lastError: any = null;
 
     for (const model of modelsToTry) {
-      let attempts = 3;
+      let attempts = 2; // Try up to 2 times per model to switch quickly to fallback if overloaded
       while (attempts > 0 && !generatedText) {
         try {
-          console.log(`Attempting review generation with model: ${model} (${4 - attempts}/3)`);
+          console.log(`Attempting review generation with model: ${model} (${3 - attempts}/2)`);
           const response = await client.models.generateContent({
             model: model,
             contents: userPrompt,
@@ -118,8 +129,8 @@ app.post("/api/generate-review", async (req, res) => {
           console.warn(`Attempt failed for model ${model}. Error: ${err.message || err}`);
           attempts--;
           if (attempts > 0) {
-            // Wait 1.5 seconds before retrying
-            await new Promise((resolve) => setTimeout(resolve, 1500));
+            // Short backoff before retry
+            await new Promise((resolve) => setTimeout(resolve, 1000));
           }
         }
       }
@@ -127,18 +138,21 @@ app.post("/api/generate-review", async (req, res) => {
     }
 
     if (!generatedText) {
-      const isUnavailable = lastError?.message?.includes("503") || lastError?.message?.includes("UNAVAILABLE") || JSON.stringify(lastError)?.includes("503");
+      const errorMsg = lastError?.message || JSON.stringify(lastError);
+      const isUnavailable = errorMsg.includes("503") || errorMsg.includes("UNAVAILABLE") || errorMsg.includes("high demand") || errorMsg.includes("overloaded");
       const userFriendlyMessage = isUnavailable
-        ? "현재 Google Gemini 서버가 일시적으로 매우 혼잡합니다. 잠시 후 [AI 네이버 블로그 리뷰 생성] 버튼을 다시 한번 클릭해 주세요!"
-        : (lastError?.message || "리뷰를 생성하는 중 일시적인 문제가 발생했습니다.");
-      res.status(503).json({ error: userFriendlyMessage });
+        ? "현재 Google Gemini 서비스 서버의 일시적 고부하 상태(503)입니다. 잠시 후 [AI 네이버 블로그 리뷰 생성] 버튼을 다시 한번 눌러주세요!"
+        : `Gemini API 호출 중 오류가 발생했습니다: ${errorMsg}`;
+      
+      // Return 200 with success: false to prevent Nginx/Cloud Run intercepting 5xx status codes with HTML error pages
+      res.json({ success: false, error: userFriendlyMessage });
       return;
     }
 
-    res.json({ text: generatedText });
+    res.json({ success: true, text: generatedText });
   } catch (error: any) {
     console.error("Gemini API Error:", error);
-    res.status(500).json({ error: error.message || "리뷰를 생성하는 중 오류가 발생했습니다." });
+    res.json({ success: false, error: error.message || "리뷰를 생성하는 중 알 수 없는 서버 오류가 발생했습니다." });
   }
 });
 
